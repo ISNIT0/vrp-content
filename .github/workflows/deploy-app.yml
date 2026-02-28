@@ -1,0 +1,101 @@
+# Triggered when code is pushed to an app/* branch.
+# Builds the app, uploads dist/ to S3, and registers the AppVersion with the backend.
+#
+# Required secrets:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY — S3 upload credentials
+#   AWS_S3_BUCKET — e.g. vrp-uploads
+#   CLOUDFRONT_URL — e.g. https://cdn.vrp.app
+#   VRP_API_URL — backend API base URL (e.g. https://api.vrp.app)
+#   VRP_DEPLOY_TOKEN — service account JWT for calling the deploy endpoint
+
+name: Deploy App
+
+on:
+  push:
+    branches:
+      - 'app/**'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Check dist/ exists
+        id: check
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "No dist/ directory after build — failing"
+            exit 1
+          fi
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          APP_ID=${BRANCH_NAME#app/}
+          BUNDLE_HASH=$(find dist -type f -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "branch_name=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
+          echo "bundle_hash=$BUNDLE_HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to S3
+        uses: jakejarvis/s3-sync-action@v0.5.1
+        with:
+          args: --acl public-read --cache-control "public, max-age=31536000, immutable"
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          SOURCE_DIR: dist
+          DEST_DIR: bundles/${{ steps.meta.outputs.app_id }}/${{ steps.meta.outputs.commit_sha }}
+
+      - name: Register AppVersion with backend
+        env:
+          VRP_API_URL: ${{ secrets.VRP_API_URL }}
+          VRP_DEPLOY_TOKEN: ${{ secrets.VRP_DEPLOY_TOKEN }}
+          CLOUDFRONT_URL: ${{ secrets.CLOUDFRONT_URL }}
+        run: |
+          APP_ID="${{ steps.meta.outputs.app_id }}"
+          COMMIT_SHA="${{ steps.meta.outputs.commit_sha }}"
+          BUNDLE_HASH="${{ steps.meta.outputs.bundle_hash }}"
+          BUNDLE_URL="${CLOUDFRONT_URL}/bundles/${APP_ID}/${COMMIT_SHA}/index.html"
+
+          # Look up the project ID for this app
+          PROJECT_ID=$(curl -sf \
+            -H "Authorization: Bearer $VRP_DEPLOY_TOKEN" \
+            "${VRP_API_URL}/api/v1/apps/${APP_ID}" | jq -r '.project_id // empty')
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "Could not find project for app $APP_ID — skipping deploy registration"
+            exit 0
+          fi
+
+          # Register the new version
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $VRP_DEPLOY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"git_commit\": \"${COMMIT_SHA}\", \"bundle_url\": \"${BUNDLE_URL}\", \"bundle_hash\": \"${BUNDLE_HASH}\"}" \
+            "${VRP_API_URL}/api/v1/vibe/projects/${PROJECT_ID}/deploy")
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "Deployed app $APP_ID at commit $COMMIT_SHA"
+          else
+            echo "Deploy registration failed with status $HTTP_STATUS"
+            exit 1
+          fi
