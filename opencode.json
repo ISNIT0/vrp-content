@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "{env:OPENCODE_MODEL}",
+  "provider": {
+    "{env:OPENCODE_PROVIDER}": {
+      "options": {
+        "apiKey": "{env:OPENCODE_API_KEY}"
+      }
+    }
+  },
+  "server": {
+    "port": 4096,
+    "hostname": "0.0.0.0"
+  },
+  "instructions": [".opencode/rules/*.md"],
+  "autoupdate": false,
+  "share": "disabled"
+}
