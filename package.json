@@ -1,0 +1,12 @@
+{
+  "name": "vrp-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.tsx --bundle --outfile=dist/bundle.js --minify --jsx=automatic"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
