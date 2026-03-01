@@ -1,10 +1,13 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { VRPProvider } from "./vrp-sdk";
 import "./index.css";
 import App from "./App.tsx";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <VRPProvider>
+      <App />
+    </VRPProvider>
   </StrictMode>,
 );
